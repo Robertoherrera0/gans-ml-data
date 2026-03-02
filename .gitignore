@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# virtual env
+gans-env/*
+
 # C extensions
 *.so
 
