@@ -1,0 +1,5 @@
+refl1d
+numpy
+pandas
+json
+bumps
