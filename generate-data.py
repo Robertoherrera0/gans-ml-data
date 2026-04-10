@@ -3,8 +3,10 @@ import json
 import copy
 import numpy as np
 from refl1d.names import QProbe, Slab, Experiment, SLD, Parameter
+
 np.random.seed(42)
 wavelength_resolution = 0.019959062306768447
+
 
 def calculate_reflectivity(q, model_description, q_resolution=wavelength_resolution):
     """
@@ -42,6 +44,35 @@ def calculate_reflectivity(q, model_description, q_resolution=wavelength_resolut
     return r
 
 
+def add_noise(r, rel_sigma_min=0.05, rel_sigma_max=0.30):
+    """
+    Add realistic neutron reflectometry noise following Starostin et al. 2025.
+    
+    1. Gaussian noise: sigma per Q point = uniform(5%, 30%) * R
+    2. Background: constant b drawn log-uniform from [1e-9, 1e-4]
+    3. Normalization misalignment: multiply whole curve by uniform(0.95, 1.05)
+    4. Clip to minimum threshold 1e-10
+    """
+    # 1. Gaussian noise — independent per Q point
+    rel_sigmas = np.random.uniform(rel_sigma_min, rel_sigma_max, size=r.shape)
+    sigmas = rel_sigmas * r
+    r_noisy = np.random.normal(loc=r, scale=sigmas)
+
+    # 2. Background — log-uniform [1e-9, 1e-4]
+    log_b = np.random.uniform(np.log10(1e-9), np.log10(1e-4))
+    b = 10 ** log_b
+    r_noisy = r_noisy + b
+
+    # 3. Normalization misalignment — whole curve scaled by uniform(0.95, 1.05)
+    delta_r = np.random.uniform(0.95, 1.05)
+    r_noisy = r_noisy * delta_r
+
+    # 4. Clip to minimum threshold
+    r_noisy = np.clip(r_noisy, 1e-10, None)
+
+    return r_noisy.astype(np.float32)
+
+
 class Contrast:
     def __init__(self, name, sld):
         self.name = name
@@ -75,14 +106,14 @@ class ReflectivityModels:
         dict(i=2, par="thickness", bounds=[3, 20]),
         dict(i=2, par="sld", bounds=[1, 5]),
         dict(i=2, par="roughness", bounds=[1, 20]),
-        # Tail 
+        # Tail
         dict(i=3, par="thickness", bounds=[5, 50]),
         dict(i=3, par="sld", bounds=[-1, 3]),
         dict(i=3, par="roughness", bounds=[1, 30]),
         # Head2
-        dict(i=4, par="thickness", bounds=[3, 50]), # Includes decorative molecule
+        dict(i=4, par="thickness", bounds=[3, 50]),
         dict(i=4, par="sld", bounds=[1, 5]),
-        dict(i=4, par="roughness", bounds=[1, 30]), 
+        dict(i=4, par="roughness", bounds=[1, 30]),
         # Medicine
         dict(i=5, par="thickness", bounds=[5, 200]),
         dict(i=5, par="sld", bounds=[1, 5]),
@@ -109,35 +140,36 @@ class ReflectivityModels:
             self.q = q
 
     def generate(self, n_samples):
-
-        n_params = len(self.parameters)
+        n_params    = len(self.parameters)
         n_contrasts = len(self.contrasts)
-        n_q = len(self.q)
+        n_q         = len(self.q)
 
         params_norm = np.random.uniform(-1, 1, size=(n_samples, n_params))
-        params = self.to_physical_parameters(params_norm)
+        params      = self.to_physical_parameters(params_norm)
 
-        # preallocate output
         reflectivity_data = np.empty((n_samples, n_contrasts, n_q), dtype=np.float32)
+        params_corrected  = np.empty_like(params)
 
         for i, p in enumerate(params):
-
             if i % 50000 == 0:
                 print(f"{i} / {n_samples} samples")
 
+            desc = self.get_model_description(p)
+
+            # extract corrected params back from desc
+            for k, par in enumerate(self.parameters):
+                params_corrected[i, k] = desc["layers"][par["i"]][par["par"]]
+
             for j, contrast in enumerate(self.contrasts):
+                desc_c = self.get_model_description(p)
+                desc_c["layers"][-1]["sld"] = contrast.medium_sld
+                r = calculate_reflectivity(self.q, desc_c)
+                reflectivity_data[i, j, :] = add_noise(r)
 
-                desc = self.get_model_description(p)
 
-                desc["layers"][-1]["sld"] = contrast.medium_sld
-
-                r = calculate_reflectivity(self.q, desc)
-
-                reflectivity_data[i, j, :] = r
-
-        self.params_norm = params_norm
-        self.params = params
-        self.reflectivity_data = reflectivity_data
+        self.params_norm        = params_norm
+        self.params             = params_corrected
+        self.reflectivity_data  = reflectivity_data
 
     def to_physical_parameters(self, params_norm):
 
@@ -158,19 +190,24 @@ class ReflectivityModels:
 
         desc = copy.deepcopy(self.model_description)
 
+        # first pass — set all thicknesses
         for i, p in enumerate(self.parameters):
+            if p["par"] == "thickness":
+                desc["layers"][p["i"]]["thickness"] = params[i]
 
+        # second pass — set everything else with roughness constraint
+        for i, p in enumerate(self.parameters):
+            if p["par"] == "thickness":
+                continue
             layer_index = p["i"]
             parameter_name = p["par"]
             value = params[i]
             if parameter_name == "roughness" and layer_index != 0:
                 thickness = desc["layers"][layer_index]["thickness"]
                 if value > thickness:
-                    # resample uniformly between bounds, capped at thickness
                     lo, hi = self.parameters[i]["bounds"]
                     hi_valid = min(hi, thickness)
                     value = np.random.uniform(lo, hi_valid)
-
             desc["layers"][layer_index][parameter_name] = value
 
         return desc
@@ -197,7 +234,6 @@ class ReflectivityModels:
         )
 
         meta = {
-
             "parameters": [
                 {
                     "index": i,
@@ -207,7 +243,6 @@ class ReflectivityModels:
                 }
                 for i, p in enumerate(self.parameters)
             ],
-
             "contrasts": [
                 {
                     "name": c.name,
@@ -215,10 +250,9 @@ class ReflectivityModels:
                 }
                 for c in self.contrasts
             ],
-
             "q_points": len(self.q),
-
             "parameter_sampling": "uniform in [-1,1]",
+            "noise": "Gaussian 5-30% per Q point + log-uniform background [1e-9,1e-4] + normalization misalignment [0.95,1.05]",
         }
 
         with open(os.path.join(output_dir, f"{self.name}_metadata.json"), "w") as f:
@@ -227,9 +261,9 @@ class ReflectivityModels:
 
 def main():
 
-    n_samples = 100000
+    n_samples = 3000000
 
-    output_dir = "fixed-medium-dataset"
+    output_dir = "large-dataset-with-noise"
 
     model = ReflectivityModels()
 
