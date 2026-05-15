@@ -6,6 +6,7 @@ __pycache__/
 # virtual env
 gans-env/*
 *-dataset/
+dataset*/
 # C extensions
 *.so
 
