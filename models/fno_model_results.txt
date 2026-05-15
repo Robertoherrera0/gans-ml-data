@@ -1,0 +1,72 @@
+small dataset - noise-free 
+    fno model - no modifications
+        Epoch 01 | train_loss=0.310122 | val_loss=0.327386
+        Epoch 02 | train_loss=0.271654 | val_loss=0.267338
+        Epoch 03 | train_loss=0.254928 | val_loss=0.250805
+        Epoch 04 | train_loss=0.244924 | val_loss=0.245449
+        Epoch 05 | train_loss=0.238548 | val_loss=0.237712
+        Epoch 06 | train_loss=0.232895 | val_loss=0.237047
+        Epoch 07 | train_loss=0.227478 | val_loss=0.231731
+        Epoch 08 | train_loss=0.223390 | val_loss=0.226507
+        Epoch 09 | train_loss=0.218735 | val_loss=0.224236
+        Epoch 10 | train_loss=0.215666 | val_loss=0.219773
+        Epoch 11 | train_loss=0.211905 | val_loss=0.220750
+        Epoch 12 | train_loss=0.208933 | val_loss=0.218253
+        Epoch 13 | train_loss=0.205160 | val_loss=0.217524
+        Epoch 14 | train_loss=0.202347 | val_loss=0.216031
+        Epoch 15 | train_loss=0.199438 | val_loss=0.214975
+        Epoch 16 | train_loss=0.197417 | val_loss=0.214248
+        Epoch 17 | train_loss=0.195296 | val_loss=0.213630
+        Epoch 18 | train_loss=0.193699 | val_loss=0.213519
+        Epoch 19 | train_loss=0.192725 | val_loss=0.213033
+        Epoch 20 | train_loss=0.192390 | val_loss=0.213045  
+        {'best_val_loss': 0.21303297579288483, 'test_loss': 0.21135029196739197, 'epochs': 20, 'batch_size': 512, 'learning_rate': 0.001, 'width': 128, 'n_modes': 16, 'n_fno_layers': 5}   
+        {'best_val_loss': 0.21303297579288483,
+        'test_loss': 0.21135029196739197,
+        'epochs': 20,
+        'batch_size': 512,
+        'learning_rate': 0.001,
+        'width': 128,
+        'n_modes': 16,
+        'n_fno_layers': 5}
+
+        with abele's loss function
+        Epoch 01 | train_loss=0.384407 | val_loss=0.500904
+        Epoch 02 | train_loss=0.351785 | val_loss=0.420415
+        Epoch 03 | train_loss=0.341040 | val_loss=0.341562
+        Epoch 04 | train_loss=0.337696 | val_loss=0.340865
+        Epoch 05 | train_loss=0.322369 | val_loss=0.322983
+        Epoch 06 | train_loss=0.312066 | val_loss=0.310724
+        Epoch 07 | train_loss=0.304985 | val_loss=0.310957
+        Epoch 08 | train_loss=0.299484 | val_loss=0.312953
+        Epoch 09 | train_loss=0.296469 | val_loss=0.301297
+        Epoch 10 | train_loss=0.292607 | val_loss=0.295687
+        Epoch 11 | train_loss=0.288987 | val_loss=0.292778
+        Epoch 12 | train_loss=0.286172 | val_loss=0.290974
+        Epoch 13 | train_loss=0.284245 | val_loss=0.293520
+        Epoch 14 | train_loss=0.282134 | val_loss=0.289412
+        Epoch 15 | train_loss=0.280195 | val_loss=0.285795
+        Epoch 16 | train_loss=0.278758 | val_loss=0.283408
+        Epoch 17 | train_loss=0.277648 | val_loss=0.281015
+        Epoch 18 | train_loss=0.276645 | val_loss=0.280237
+        Epoch 19 | train_loss=0.275916 | val_loss=0.279942
+        Epoch 20 | train_loss=0.275936 | val_loss=0.279513
+        {'best_val_loss': 0.27951332926750183, 'test_loss': 0.27843043208122253, 'epochs': 20, 'batch_size': 512, 'learning_rate': 0.001, 'width': 128, 'n_modes': 16, 'n_fno_layers': 5}
+        {'best_val_loss': 0.27951332926750183,
+        'test_loss': 0.27843043208122253,
+        'epochs': 20,
+        'batch_size': 512,
+        'learning_rate': 0.001,
+        'width': 128,
+        'n_modes': 16,
+        'n_fno_layers': 5}
+
+medium dataset - noise-free
+    fno model - no modifications
+    with abele's loss function
+
+medium dataset - with noise
+    fno model - no modifications
+    {'best_val_loss': 0.19623166348934173, 'test_loss': 0.19675626485347747, 'epochs': 20, 'batch_size': 512, 'learning_rate': 0.001, 'width': 128, 'n_modes': 16, 'n_fno_layers': 5}
+    with abele's loss function
+    {'best_val_loss': 0.2904528200149536, 'test_loss': 0.2903390348434448, 'epochs': 20, 'batch_size': 512, 'learning_rate': 0.001, 'width': 128, 'n_modes': 16, 'n_fno_layers': 5}

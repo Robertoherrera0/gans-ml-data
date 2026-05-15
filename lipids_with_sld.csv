@@ -1,0 +1,7 @@
+name,formula,density_g_cm3,sld_real_1e6_A2,source
+DPPC,C40H80NO8P,1.03,0.233,Avanti
+DMPC,C36H72NO8P,1.01,0.277,Avanti
+DOPC,C44H84NO8P,1.02,0.306,literature
+DSPC,C44H88NO8P,1.05,0.194,Avanti
+D2O,D2O,1.11,6.388,Sigma
+H2O,H2O,1.0,-0.561,Sigma
