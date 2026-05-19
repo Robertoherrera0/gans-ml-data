@@ -1,283 +1,229 @@
 # -*- coding: utf-8 -*-
-"""
-TensorFlow implementation of Abeles reflectivity calculation with resolution smearing.
-Port from PyTorch panpe implementation.
-"""
+#
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
-import tensorflow as tf
-import math
+from __future__ import annotations
 
+from math import pi, sqrt, log
+from functools import reduce
+import jax.numpy as jnp
+from jax import Array, vmap
+import jax.scipy.signal
 
-def abeles(q, thickness, roughness, sld):
-    """
-    Calculate neutron/X-ray reflectivity using Abeles matrix formalism.
-    
-    Args:
-        q: (batch, q_points) or (q_points,) momentum transfer
-        thickness: (batch, num_layers) layer thicknesses
-        roughness: (batch, num_layers+1) interfacial roughness
-        sld: (batch, num_layers+1) or (batch, num_layers+2) scattering length density
-        
-    Returns:
-        r: (batch, q_points) reflectivity values
-    """
-    c_dtype = tf.complex128 if q.dtype == tf.float64 else tf.complex64
-    
-    batch_size = tf.shape(thickness)[0]
-    num_layers = tf.shape(thickness)[1]
-    
-    # Handle SLD padding
-    if sld.shape[-1] == num_layers + 1:
-        # Add zero ambient SLD
-        sld = tf.concat([tf.zeros([batch_size, 1], dtype=sld.dtype), sld], axis=-1)
-    
-    if sld.shape[-1] != num_layers + 2:
-        raise ValueError(
-            f"SLD shape mismatch: expected {num_layers + 2}, got {sld.shape[-1]}"
-        )
-    
-    sld = sld[:, None, :]  # (batch, 1, layers)
-    
-    # Add zero thickness for ambient layer
-    thickness = tf.concat(
-        [tf.zeros([batch_size, 1], dtype=thickness.dtype), thickness], axis=-1
-    )
-    thickness = thickness[:, None, :]  # (batch, 1, layers)
-    
-    roughness = roughness[:, None, :] ** 2  # (batch, 1, layers)
-    
-    # Convert SLD to complex with small imaginary part for numerical stability
-    sld = tf.cast((sld - sld[..., :1]) * 1e-6, c_dtype) + tf.cast(1e-36, c_dtype) * 1j
-    
-    # Wave vectors
-    k_z0 = tf.cast(q / 2, c_dtype)
-    if len(k_z0.shape) == 1:
-        k_z0 = k_z0[None, :]
-    if len(k_z0.shape) == 2:
-        k_z0 = k_z0[..., None]  # (batch, q, 1)
-    
-    k_n = tf.sqrt(k_z0**2 - 4 * math.pi * sld)  # (batch, q, layers)
-    
-    k_n_curr = k_n[..., :-1]
-    k_n_next = k_n[..., 1:]
-    
-    beta = tf.cast(1j, c_dtype) * tf.cast(thickness, c_dtype) * k_n_curr
-    exp_beta = tf.exp(beta)
-    exp_m_beta = tf.exp(-beta)
-    
-    # Fresnel coefficients with roughness - cast roughness to complex
-    roughness_factor = tf.exp(-2 * k_n_curr * k_n_next * tf.cast(roughness, c_dtype))
-    rn = (k_n_curr - k_n_next) / (k_n_curr + k_n_next) * roughness_factor
-    
-    # Characteristic matrices: shape (batch, q, layers-1, 2, 2)
-    c11 = exp_beta
-    c12 = rn * exp_m_beta
-    c21 = rn * exp_beta
-    c22 = exp_m_beta
-    
-    # Stack into matrices
-    c_matrices = tf.stack([
-        tf.stack([c11, c12], axis=-1),
-        tf.stack([c21, c22], axis=-1)
-    ], axis=-1)  # (batch, q, layers-1, 2, 2)
-    
-    # Matrix multiplication across layers
-    # Split along layer dimension and reduce
-    c_list = tf.unstack(c_matrices, axis=2)
-    m = c_list[0]
-    for c in c_list[1:]:
-        m = tf.matmul(m, c)
-    # Reflectivity from transfer matrix
-    r = tf.abs(m[..., 1, 0] / m[..., 0, 0]) ** 2
-    r = tf.minimum(r, 1.0)
-    
-    return r
 
 def abeles_constant_smearing(
-    q,
-    thickness,
-    roughness,
-    sld,
-    dq,
-    gauss_num=51,
-    xrr_dq=True,
+    q: Array,
+    thickness: Array,
+    roughness: Array,
+    sld: Array,
+    dq: Array = None,
+    gauss_num: int = 51,
+    xrr_dq: bool = True,
+    abeles_func=None,
 ):
-    """
-    Calculate smeared reflectivity with constant dQ/Q resolution.
-    
-    Args:
-        q: (batch, q_points) or (q_points,) momentum transfer
-        thickness: (batch, num_layers) layer thicknesses  
-        roughness: (batch, num_layers+1) interfacial roughness
-        sld: (batch, num_layers+1 or num_layers+2) scattering length density
-        dq: (batch, q_points) or (1, q_points) resolution
-        gauss_num: number of points in Gaussian kernel (default 51)
-        xrr_dq: if True, use constant dQ; if False, use constant dQ/Q
-        
-    Returns:
-        smeared_curves: (batch, q_points) smeared reflectivity
-    """
-    if dq is None:
-        raise ValueError("dq must be provided for constant smearing")
-    
-    if len(dq.shape) == 1:
-        dq = dq[None, :]
-    
-    batch_size = int(tf.shape(thickness)[0].numpy())
-    
-    if tf.shape(dq)[0] != batch_size:
-        dq = tf.tile(dq, [batch_size, 1])
-    
-    # Generate high-resolution Q axis
+
+    assert dq is not None
+
+    dq = jnp.atleast_2d(dq)
+
+    batch_size = thickness.shape[0]
+
+    if dq.shape[0] != batch_size:
+        dq = jnp.broadcast_to(dq, (batch_size, dq.shape[-1]))
+
+    abeles_func = abeles_func or abeles
+
     q_lin = _get_q_axes(q, dq, gauss_num, xrr_dq=xrr_dq)
-    
-    # Generate Gaussian kernels
     kernels = _get_t_gauss_kernels(dq, gauss_num)
+
+    curves = abeles_func(q_lin, thickness, roughness, sld)
+
+    padding = (kernels.shape[-1] - 1) // 2
     
-    # Calculate reflectivity on high-res grid
-    curves = abeles(q_lin, thickness, roughness, sld)
-    
-    # Apply Gaussian convolution
-    padding = (tf.shape(kernels)[-1] - 1) // 2
-    curves_padded = tf.pad(curves, [[0, 0], [padding, padding]], mode='REFLECT')
-    
-    # Manual convolution per batch item
-    smeared_curves = []
-    for i in range(batch_size):
-        # kernel shape: (51,) -> (51, 1, 1) for conv1d
-        kernel = kernels[i, :, None, None]
-        # curve shape: (N,) -> (1, N, 1) for conv1d
-        curve_input = curves_padded[i:i+1, :, None]
-        
-        conv_result = tf.nn.conv1d(
-            curve_input,
-            kernel,
-            stride=1,
-            padding='VALID'
-        )
-        smeared_curves.append(conv_result[0, :, 0])
-    
-    smeared_curves = tf.stack(smeared_curves, axis=0)
-    
-    # Interpolate back to original Q grid
-    if len(q.shape) == 1:
-        q = tf.tile(q[None, :], [batch_size, 1])
-    elif tf.shape(q)[0] != batch_size:
-        q = tf.tile(q, [batch_size, 1])
-    
+    # JAX native change from PANPE - vmap for batched convolution
+    def convolve_single(curve, kernel):
+        curve_padded = jnp.pad(curve, (padding, padding), mode='reflect')
+        return jax.scipy.signal.convolve(curve_padded, kernel, mode='valid')
+
+    smeared_curves = vmap(convolve_single)(curves, kernels)
+
+    if q.shape[0] != smeared_curves.shape[0]:
+        q = jnp.broadcast_to(q, (smeared_curves.shape[0], *q.shape[1:]))
+
     smeared_curves = _batch_linear_interp1d(q_lin, smeared_curves, q)
-    
+
     return smeared_curves
 
 
-# Helper functions
-_FWHM = 2 * math.sqrt(2 * math.log(2.0))
-_2PI_SQRT = 1.0 / math.sqrt(2 * math.pi)
+_FWHM = 2 * sqrt(2 * log(2.0))
+_2PI_SQRT = 1.0 / sqrt(2 * pi)
 
 
-def _batch_linspace(start, end, num):
-    """Batched linspace from start to end."""
-    steps = tf.linspace(0.0, 1.0, num)
-    steps = tf.cast(steps[None, :], start.dtype)  # Match dtype
-    return steps * (end - start) + start
+def _batch_linspace(start: Array, end: Array, num: int):
+    return (
+        jnp.linspace(0, 1, int(num))[None]
+        * (end - start)
+        + start
+    )
+
 
 def _torch_gauss(x, s):
-    """Gaussian function."""
-    return tf.cast(_2PI_SQRT, x.dtype) / s * tf.exp(-0.5 * x**2 / s / s)
+    return _2PI_SQRT / s * jnp.exp(-0.5 * x**2 / s / s)
 
-def _get_t_gauss_kernels(resolutions, gaussnum=51):
-    """Generate Gaussian convolution kernels."""
-    # resolutions should be (batch, 1) - one value per batch
+
+def _get_t_gauss_kernels(resolutions: Array, gaussnum: int = 51):
     gauss_x = _batch_linspace(-1.7 * resolutions, 1.7 * resolutions, gaussnum)
-    dx = gauss_x[:, 1:2] - gauss_x[:, 0:1]
-    gauss_y = _torch_gauss(gauss_x, resolutions / _FWHM) * dx
+    gauss_y = (
+        _torch_gauss(gauss_x, resolutions / _FWHM)
+        * (gauss_x[:, 1] - gauss_x[:, 0])[:, None]
+    )
     return gauss_y
 
-def _get_q_axes(q, resolutions, gaussnum=51, xrr_dq=True):
-    """Generate high-resolution Q axis for convolution."""
+
+def _get_q_axes(
+    q: Array, resolutions: Array, gaussnum: int = 51, xrr_dq: bool = True
+):
     if xrr_dq:
         return _get_q_axes_for_constant_dq(q, resolutions, gaussnum)
     else:
         return _get_q_axes_for_linear_dq(q, resolutions, gaussnum)
 
 
-def _get_q_axes_for_constant_dq(q, resolutions, gaussnum=51):
-    """Q axis for constant dQ resolution."""
+def _get_q_axes_for_linear_dq(q: Array, resolutions: Array, gaussnum: int = 51):
     gaussgpoint = (gaussnum - 1) / 2
-    
-    start = tf.reduce_min(q, axis=1, keepdims=True) - resolutions * 1.7
-    end = tf.reduce_max(q, axis=1, keepdims=True) + resolutions * 1.7
-    
-    interpnums = tf.cast(
-        tf.round(tf.abs((end - start)) / (1.7 * resolutions / gaussgpoint)),
-        tf.int32
+
+    lowq = jnp.maximum(q.min(1), 1e-6)[..., None]
+    highq = q.max(1)[..., None]
+
+    start = jnp.log10(lowq) - 6 * resolutions / _FWHM
+    end = jnp.log10(highq * (1 + 6 * resolutions / _FWHM))
+
+    interpnums = (
+        jnp.abs((jnp.abs(end - start)) / (1.7 * resolutions / _FWHM / gaussgpoint))
+        .round()
+        .astype(int)
     )
-    
-    q_lin = _batch_linspace_with_padding(start, end, interpnums)
-    q_lin = tf.maximum(q_lin, 1e-6)
-    
+
+    q_lin = 10 ** _batch_linspace_with_padding(start, end, interpnums)
+
     return q_lin
 
 
-def _get_q_axes_for_constant_dq(q, resolutions, gaussnum=51):
-    """Q axis for constant dQ resolution."""
+def _get_q_axes_for_constant_dq(
+    q: Array, resolutions: Array, gaussnum: int = 51
+) -> Array:
     gaussgpoint = (gaussnum - 1) / 2
-    
-    start = tf.reduce_min(q, axis=1, keepdims=True) - resolutions * 1.7
-    end = tf.reduce_max(q, axis=1, keepdims=True) + resolutions * 1.7
-    
-    interpnums = tf.cast(
-        tf.round(tf.abs((end - start)) / (1.7 * resolutions / gaussgpoint)),
-        tf.int32
+
+    start = q.min(1)[:, None] - resolutions * 1.7
+    end = q.max(1)[:, None] + resolutions * 1.7
+
+    interpnums = (
+        jnp.abs((jnp.abs(end - start)) / (1.7 * resolutions / gaussgpoint))
+        .round()
+        .astype(int)
     )
-    
+
     q_lin = _batch_linspace_with_padding(start, end, interpnums)
-    q_lin = tf.maximum(q_lin, 1e-6)
-    
+    q_lin = jnp.maximum(q_lin, 1e-6)
+
     return q_lin
 
-def _batch_linspace_with_padding(start, end, nums):
-    """Batched linspace with variable lengths (padded to max)."""
-    max_num = int(tf.reduce_max(nums).numpy())
-    batch_size = int(tf.shape(start)[0].numpy())
-    
-    result = []
-    for i in range(batch_size):
-        line = tf.linspace(start[i, 0], end[i, 0], max_num)
-        result.append(line)
-    
-    return tf.stack(result, axis=0)
 
-def _batch_linear_interp1d(x, y, x_new):
-    """Batched 1D linear interpolation."""
-    eps = tf.experimental.numpy.finfo(y.dtype).eps
+def _batch_linspace_with_padding(start: Array, end: Array, nums: Array) -> Array:
+    max_num = nums.max().astype(int)
+
+    deltas = 1 / (nums - 1)
+
+    x = jnp.maximum(
+        _batch_linspace(deltas * (nums - max_num), jnp.ones_like(deltas), max_num), 0
+    )
+
+    x = x * (end - start) + start
+
+    return x
+
+
+def _batch_linear_interp1d(x: Array, y: Array, x_new: Array) -> Array:
+    eps = jnp.finfo(y.dtype).eps
+
+    # Handle searchsorted per batch element since JAX doesn't support batched searchsorted
+    def interp_single(x_single, y_single, x_new_single):
+        ind = jnp.searchsorted(x_single, x_new_single)
+        ind = jnp.clip(ind - 1, 0, x_single.shape[-1] - 2)
+        slopes = (y_single[1:] - y_single[:-1]) / (eps + (x_single[1:] - x_single[:-1]))
+        y_new = y_single[ind] + slopes[ind] * (x_new_single - x_single[ind])
+        return y_new
     
-    # Find indices
-    ind = tf.searchsorted(x, x_new)
-    ind = tf.clip_by_value(ind - 1, 0, tf.shape(x)[-1] - 2)
-    
-    # Calculate slopes
-    slopes = (y[:, 1:] - y[:, :-1]) / (eps + (x[:, 1:] - x[:, :-1]))
-    
-    # Gather values
-    batch_size = tf.shape(y)[0]
-    batch_indices = tf.range(batch_size)[:, None]
-    
-    y_gathered = tf.gather_nd(y, tf.stack([
-        tf.tile(batch_indices, [1, tf.shape(x_new)[1]]),
-        ind
-    ], axis=-1))
-    
-    slopes_gathered = tf.gather_nd(slopes, tf.stack([
-        tf.tile(batch_indices, [1, tf.shape(x_new)[1]]),
-        ind
-    ], axis=-1))
-    
-    x_gathered = tf.gather_nd(x, tf.stack([
-        tf.tile(batch_indices, [1, tf.shape(x_new)[1]]),
-        ind
-    ], axis=-1))
-    
-    y_new = y_gathered + slopes_gathered * (x_new - x_gathered)
+    y_new = vmap(interp_single)(x, y, x_new)
     
     return y_new
+
+
+def abeles(
+    q: Array,
+    thickness: Array,
+    roughness: Array,
+    sld: Array,
+):
+    c_dtype = jnp.complex128 if q.dtype == jnp.float64 else jnp.complex64
+
+    batch_size, num_layers = thickness.shape
+
+    if sld.shape[-1] == num_layers + 1:
+        # add zero ambient sld
+        sld = jnp.concatenate([jnp.zeros((batch_size, 1)), sld], -1)
+    if sld.shape[-1] != num_layers + 2:
+        raise ValueError(
+            "Number of SLD values does not equal to num_layers + 2 (substrate + ambient)."
+        )
+
+    sld = sld[:, None]
+
+    # add zero thickness for ambient layer:
+    thickness = jnp.concatenate([jnp.zeros((batch_size, 1)), thickness], -1)[:, None]
+
+    roughness = roughness[:, None] ** 2
+
+    sld = (sld - sld[..., :1]) * 1e-6 + 1e-36j
+
+    k_z0 = (q / 2).astype(c_dtype)
+
+    if k_z0.ndim == 1:
+        k_z0 = jnp.expand_dims(k_z0, 0)
+
+    if k_z0.ndim == 2:
+        k_z0 = jnp.expand_dims(k_z0, -1)
+
+    k_n = jnp.sqrt(k_z0**2 - 4 * pi * sld)
+
+    # k_n.shape - (batch, q, layers)
+
+    k_n, k_np1 = k_n[..., :-1], k_n[..., 1:]
+
+    beta = 1j * thickness * k_n
+
+    exp_beta = jnp.exp(beta)
+    exp_m_beta = jnp.exp(-beta)
+
+    rn = (k_n - k_np1) / (k_n + k_np1) * jnp.exp(-2 * k_n * k_np1 * roughness)
+
+    c_matrices = jnp.stack(
+        [
+            jnp.stack([exp_beta, rn * exp_m_beta], -1),
+            jnp.stack([rn * exp_beta, exp_m_beta], -1),
+        ],
+        -1,
+    )
+
+    # Move layer axis to front and split into list
+    c_matrices = jnp.moveaxis(c_matrices, -3, 0)
+    c_matrices = [c_matrices[i] for i in range(c_matrices.shape[0])]
+
+    m = reduce(jnp.matmul, c_matrices)
+
+    r = jnp.abs(m[..., 1, 0] / m[..., 0, 0]) ** 2
+    r = jnp.minimum(r, 1.0)
+
+    return r

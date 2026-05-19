@@ -228,7 +228,7 @@ class ReflectivityModels:
 
 
 def main():
-    n_samples  = 3000000
+    n_samples  = 100000
     output_dir = "large-dataset-with-noise-and-priors"
     model = ReflectivityModels()
     print(f"Generating {n_samples} samples...")

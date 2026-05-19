@@ -42,14 +42,12 @@ def abeles_constant_smearing(
 
     padding = (kernels.shape[-1] - 1) // 2
     
-    # JAX doesn't have conv1d with groups, use convolve instead
-    smeared_curves = jnp.zeros_like(curves)
-    curves_padded = jnp.pad(curves, ((0, 0), (padding, padding)), mode='reflect')
-    
-    for i in range(kernels.shape[0]):
-        smeared_curves = smeared_curves.at[i].set(
-            jax.scipy.signal.convolve(curves_padded[i], kernels[i], mode='valid')
-        )
+    # JAX native change from PANPE
+    def convolve_single(curve, kernel):
+        curve_padded = jnp.pad(curve, (padding, padding), mode='reflect')
+        return jax.scipy.signal.convolve(curve_padded, kernel, mode='valid')
+
+    smeared_curves = vmap(convolve_single)(curves, kernels)
 
     if q.shape[0] != smeared_curves.shape[0]:
         q = jnp.broadcast_to(q, (smeared_curves.shape[0], *q.shape[1:]))
